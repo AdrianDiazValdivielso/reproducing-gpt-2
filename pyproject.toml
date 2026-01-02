@@ -1,0 +1,13 @@
+[project]
+name = "reproducing-gpt-2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipywidgets>=8.1.8",
+    "matplotlib>=3.10.8",
+    "notebook>=7.5.1",
+    "tiktoken>=0.12.0",
+    "transformers>=4.57.3",
+]
