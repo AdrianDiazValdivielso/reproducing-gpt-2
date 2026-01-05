@@ -15,6 +15,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -27,7 +28,7 @@ class CausalSelfAttention(nn.Module):
         # calculate query, key, values for all heads in batch and move head forward to be the batch... [couldn't copy all]
         # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
         # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
-        qkv = self.c_attn(x)
+        qkv = self.c_attn(x) # (B, T, n_embd) --> (B, T, 3*n_embd); dimensions of c_attn: (n_embd, 3*n_embd)
         q, k, v = qkv.split(self.n_embd, dim=2) # (B, T, 3*n_embd) --> (B, T, n_embd)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1,2) # (B, T, nh, hs) --> (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1,2) # (B, T, nh, hs) --> (B, nh, T, hs)
@@ -49,11 +50,12 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
-        x=self.c_proj(x)
+        x = self.c_proj(x)
         return x
 
 class Block(nn.Module):
@@ -92,6 +94,24 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False) #Final layer that converts output vector in multidimensional space to a vocab token
     
+        # weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
+
+        # init parameters
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5 # we have 12 layers in our model, each made of 2 blocks (attention + MLP)
+                                                         # with residual paths which increase variance, which we are compensating
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(self, idx, targets=None): 
         # idx (indices) is of shape (B, T)
         B, T = idx.size()
@@ -200,7 +220,13 @@ class DataLoaderLite():
             self.current_position = 0 
         return x, y
 
+# ---------------------------------------------------------------------------------
 device = 'cuda' # if no GPU available, write 'cpu'. If on an apple device, try 'mps'.
+
+# ensure reproducibility
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 train_loader = DataLoaderLite(B=4, T=32)
 
@@ -210,7 +236,7 @@ model.to(device)
 
 # optimize!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(500):
+for i in range(10000):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
@@ -219,6 +245,7 @@ for i in range(500):
     optimizer.step()
     print(f"step: {i}, loss: {loss.item()}")
 
+# performance test
 x, y = train_loader.next_batch()
 x = x.to(device)
 max_length = 45
@@ -238,7 +265,6 @@ for i in range(x.size(0)):
     tokens = x[i, :max_length].tolist()
     decoded = enc.decode(tokens)
     print(">", decoded)
-
 
 import sys; sys.exit(0)
 
